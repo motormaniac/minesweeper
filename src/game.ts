@@ -17,6 +17,13 @@ export type Cell = {
 
 export type GameStatus = 'ready' | 'playing' | 'won' | 'lost'
 
+export type ChordingMode = 'none' | 'dig' | 'flag' | 'both'
+
+export type JumpMode = 'unrevealed' | 'number'
+
+// Fastest clear time (ms) per difficulty; a difficulty is absent until it's been cleared once.
+export type BestTimes = Partial<Record<DifficultyName, number>>
+
 export type GameSnapshot = {
   difficulty: DifficultyName
   difficultyLabel: string
@@ -28,20 +35,25 @@ export type GameSnapshot = {
   elapsed: number
   remainingMines: number
   targetedCell: { row: number; col: number } | null
-  chordingEnabled: boolean
+  chordingMode: ChordingMode
+  jumpMode: JumpMode
+  bestTimes: BestTimes
 }
 
 export type GameController = {
   getSnapshot: () => GameSnapshot
+  getElapsedMs: () => number
   clickCell: (row: number, col: number) => void
   revealCell: (row: number, col: number) => void
   chordCell: (row: number, col: number) => void
   moveTarget: (deltaRow: number, deltaCol: number) => void
   moveTargetToFirstUnrevealedCell: (deltaRow: number, deltaCol: number) => void
+  moveTargetToNextNumberCell: (deltaRow: number, deltaCol: number) => void
   toggleFlag: (row: number, col: number) => void
   reset: () => void
   setDifficulty: (name: DifficultyName) => void
-  setChordingEnabled: (enabled: boolean) => void
+  setChordingMode: (mode: ChordingMode) => void
+  setJumpMode: (mode: JumpMode) => void
   subscribe: (listener: () => void) => () => void
 }
 
@@ -49,6 +61,20 @@ export const difficulties: Record<DifficultyName, Difficulty> = {
   beginner: { label: 'Beginner', rows: 8, cols: 8, mines: 8 },
   intermediate: { label: 'Intermediate', rows: 10, cols: 10, mines: 16 },
   expert: { label: 'Expert', rows: 12, cols: 12, mines: 24 },
+}
+
+const stateStorageKey = 'minesweeper.state'
+
+type PersistedState = {
+  difficulty: DifficultyName
+  chordingMode: ChordingMode
+  jumpMode: JumpMode
+  status: GameStatus
+  elapsed: number
+  firstReveal: boolean
+  targetedCell: { row: number; col: number } | null
+  board: Cell[][]
+  bestTimes: BestTimes
 }
 
 export function createGame(): GameController {
@@ -59,7 +85,9 @@ export function createGame(): GameController {
   let elapsed = 0
   let firstReveal = true
   let targetedCell: { row: number; col: number } | null = null
-  let chordingEnabled = true
+  let chordingMode: ChordingMode = 'both'
+  let jumpMode: JumpMode = 'unrevealed'
+  let bestTimes: BestTimes = {}
 
   const listeners = new Set<() => void>()
 
@@ -105,6 +133,102 @@ export function createGame(): GameController {
     for (const listener of listeners) {
       listener()
     }
+
+    persist()
+  }
+
+  function persist() {
+    try {
+      const state: PersistedState = {
+        difficulty,
+        chordingMode,
+        jumpMode,
+        status,
+        elapsed: getElapsedMs(),
+        firstReveal,
+        targetedCell,
+        board,
+        bestTimes,
+      }
+
+      localStorage.setItem(stateStorageKey, JSON.stringify(state))
+    } catch {
+      // ignore unavailable storage
+    }
+  }
+
+  function loadPersistedState(): PersistedState | null {
+    try {
+      const raw = localStorage.getItem(stateStorageKey)
+
+      if (!raw) {
+        return null
+      }
+
+      const parsed = JSON.parse(raw) as PersistedState
+
+      if (!isValidPersistedState(parsed)) {
+        return null
+      }
+
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  function isValidPersistedState(state: PersistedState | null): state is PersistedState {
+    if (!state || typeof state !== 'object') {
+      return false
+    }
+
+    const difficultyConfig = difficulties[state.difficulty]
+
+    if (!difficultyConfig) {
+      return false
+    }
+
+    if (!Array.isArray(state.board) || state.board.length !== difficultyConfig.rows) {
+      return false
+    }
+
+    if (state.board.some((row) => !Array.isArray(row) || row.length !== difficultyConfig.cols)) {
+      return false
+    }
+
+    const validStatuses: GameStatus[] = ['ready', 'playing', 'won', 'lost']
+    const validChording: ChordingMode[] = ['none', 'dig', 'flag', 'both']
+    const validJump: JumpMode[] = ['unrevealed', 'number']
+
+    return (
+      validStatuses.includes(state.status) &&
+      validChording.includes(state.chordingMode) &&
+      validJump.includes(state.jumpMode)
+    )
+  }
+
+  function restore() {
+    const saved = loadPersistedState()
+
+    if (!saved) {
+      reset()
+      return
+    }
+
+    difficulty = saved.difficulty
+    chordingMode = saved.chordingMode
+    jumpMode = saved.jumpMode
+    status = saved.status
+    elapsed = saved.elapsed
+    firstReveal = saved.firstReveal
+    targetedCell = saved.targetedCell
+    board = saved.board
+    bestTimes = saved.bestTimes && typeof saved.bestTimes === 'object' ? saved.bestTimes : {}
+    // Resume a running stopwatch from the saved elapsed time rather than counting
+    // the wall-clock time the tab was closed.
+    startedAt = status === 'playing' ? Date.now() - elapsed : 0
+
+    notify()
   }
 
   function plantMines(safeRow: number, safeCol: number) {
@@ -283,7 +407,13 @@ export function createGame(): GameController {
 
     if (hasWon) {
       status = 'won'
+      elapsed = startedAt ? Date.now() - startedAt : 0
       revealAllMines()
+
+      const best = bestTimes[difficulty]
+      if (best === undefined || elapsed < best) {
+        bestTimes[difficulty] = elapsed
+      }
     }
   }
 
@@ -296,6 +426,7 @@ export function createGame(): GameController {
 
   function endGame(result: Exclude<GameStatus, 'ready' | 'playing'>) {
     status = result
+    elapsed = startedAt ? Date.now() - startedAt : 0
     revealAllMines()
 
     if (status === 'lost') {
@@ -360,7 +491,7 @@ export function createGame(): GameController {
 
     const cell = board[currentTarget.row][currentTarget.col]
 
-    if (cell.revealed && chordingEnabled) {
+    if (cell.revealed && (chordingMode === 'dig' || chordingMode === 'both')) {
       chordCell(currentTarget.row, currentTarget.col)
       return
     }
@@ -411,6 +542,27 @@ export function createGame(): GameController {
     }
   }
 
+  function flagChord(row: number, col: number) {
+    const cell = board[row][col]
+
+    if (!cell.revealed || cell.mine || cell.adjacent === 0) {
+      return
+    }
+
+    const adjacentPositions = getAdjacentPositions(row, col)
+    const unrevealedNeighbors = adjacentPositions.filter(
+      ([nextRow, nextCol]) => !board[nextRow][nextCol].revealed,
+    )
+
+    if (unrevealedNeighbors.length !== cell.adjacent) {
+      return
+    }
+
+    for (const [nextRow, nextCol] of unrevealedNeighbors) {
+      board[nextRow][nextCol].flagged = true
+    }
+  }
+
   function toggleFlag(row: number, col: number) {
     setTarget(row, col)
 
@@ -422,6 +574,10 @@ export function createGame(): GameController {
     const cell = board[row][col]
 
     if (cell.revealed) {
+      if (chordingMode === 'flag' || chordingMode === 'both') {
+        flagChord(row, col)
+      }
+
       notify()
       return
     }
@@ -473,12 +629,51 @@ export function createGame(): GameController {
     //   setTarget(lastCell.row, lastCell.col)
     //   notify()
     // } else {
-    //   // If no unrevealed cell was found in the sequence, 
+    //   // If no unrevealed cell was found in the sequence,
     //   // we still move the target to the border to ensure movement
     //   const borderRow = Math.min(Math.max(currentTarget.row + (board.length - 1) * deltaRow, 0), board.length - 1)
     //   const borderCol = Math.min(Math.max(currentTarget.col + (board[0].length - 1) * deltaCol, 0), board[0].length - 1)
     //   setTarget(borderRow, borderCol)
     //   notify()
+  }
+
+  function isNumberCell(cell: Cell): boolean {
+    return cell.revealed && !cell.mine && cell.adjacent > 0
+  }
+
+  function moveTargetToNextNumberCell(deltaRow: number, deltaCol: number) {
+    const currentTarget = targetedCell ?? getCenteredTarget()
+
+    if (deltaRow === 0 && deltaCol === 0) {
+      return
+    }
+
+    let row = currentTarget.row + deltaRow
+    let col = currentTarget.col + deltaCol
+
+    while (row >= 0 && row < board.length && col >= 0 && col < board[0].length) {
+      const cell = board[row][col]
+      const lastCell = board[row - deltaRow][col - deltaCol]
+
+      if (isNumberCell(cell) !== isNumberCell(lastCell)) {
+        // always stay on number cells
+        if (!isNumberCell(cell)) {
+          if (row - deltaRow !== currentTarget.row || col - deltaCol !== currentTarget.col) {
+            row -= deltaRow
+            col -= deltaCol
+            break
+          }
+        } else {
+          break
+        }
+      }
+
+      row += deltaRow
+      col += deltaCol
+    }
+
+    setTarget(row, col)
+    notify()
   }
 
   function remainingMines() {
@@ -488,17 +683,12 @@ export function createGame(): GameController {
     return mines - flagged
   }
 
-  function tickTimer() {
+  function getElapsedMs(): number {
     if (status === 'playing') {
-      const nextElapsed = Math.floor((Date.now() - startedAt) / 1000)
-
-      if (nextElapsed !== elapsed) {
-        elapsed = nextElapsed
-        notify()
-      }
+      return Date.now() - startedAt
     }
 
-    window.setTimeout(tickTimer, 250)
+    return elapsed
   }
 
   function reset() {
@@ -520,8 +710,13 @@ export function createGame(): GameController {
     reset()
   }
 
-  function setChordingEnabled(enabled: boolean) {
-    chordingEnabled = enabled
+  function setChordingMode(mode: ChordingMode) {
+    chordingMode = mode
+    notify()
+  }
+
+  function setJumpMode(mode: JumpMode) {
+    jumpMode = mode
     notify()
   }
 
@@ -536,27 +731,40 @@ export function createGame(): GameController {
       mines: currentDifficulty.mines,
       board,
       status,
-      elapsed,
+      elapsed: getElapsedMs(),
       remainingMines: remainingMines(),
       targetedCell,
-      chordingEnabled,
+      chordingMode,
+      jumpMode,
+      bestTimes,
     }
   }
 
-  reset()
-  tickTimer()
+  restore()
+
+  // The timer ticks via the UI between state changes, so capture the live elapsed time
+  // when the page is hidden or closed to keep the saved stopwatch accurate.
+  window.addEventListener('beforeunload', persist)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      persist()
+    }
+  })
 
   return {
     getSnapshot,
+    getElapsedMs,
     clickCell,
     revealCell,
     chordCell,
     moveTarget,
     moveTargetToFirstUnrevealedCell,
+    moveTargetToNextNumberCell,
     toggleFlag,
     reset,
     setDifficulty,
-    setChordingEnabled,
+    setChordingMode,
+    setJumpMode,
     subscribe(listener) {
       listeners.add(listener)
 
