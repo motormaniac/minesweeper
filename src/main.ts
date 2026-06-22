@@ -1,5 +1,6 @@
 import './style.css'
 
+import { mountChangeNotes } from './changeNotes'
 import { createGame } from './game'
 import { mountGame } from './ui'
 
@@ -10,4 +11,5 @@ if (!root) {
 }
 
 mountGame(root, createGame())
+mountChangeNotes()
 

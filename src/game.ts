@@ -1,3 +1,5 @@
+import { generateSolvableBoard } from './boardGenerator'
+
 export type DifficultyName = 'beginner' | 'intermediate' | 'expert'
 
 export type Difficulty = {
@@ -83,6 +85,7 @@ export function createGame(): GameController {
   let status: GameStatus = 'ready'
   let startedAt = 0
   let elapsed = 0
+  let timerPaused = false
   let firstReveal = true
   let targetedCell: { row: number; col: number } | null = null
   let chordingMode: ChordingMode = 'both'
@@ -233,67 +236,12 @@ export function createGame(): GameController {
 
   function plantMines(safeRow: number, safeCol: number) {
     const { rows, cols, mines } = getDifficulty()
-    const safeZone = new Set<number>()
+    const mineGrid = generateSolvableBoard(rows, cols, mines, safeRow, safeCol)
 
-    for (let row = safeRow - 1; row <= safeRow + 1; row += 1) {
-      for (let col = safeCol - 1; col <= safeCol + 1; col += 1) {
-        if (row >= 0 && row < rows && col >= 0 && col < cols) {
-          safeZone.add(row * cols + col)
-        }
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        board[row][col].mine = mineGrid[row][col]
       }
-    }
-
-    const allPositions: number[] = []
-    for (let index = 0; index < rows * cols; index += 1) {
-      if (!safeZone.has(index)) {
-        allPositions.push(index)
-      }
-    }
-
-    const placed = new Set<number>()
-    const minDistance = getMinMineDistance()
-    const clusterChance = getClusterChance()
-
-    let attempts = 0
-    const maxAttempts = 1000
-
-    while (placed.size < mines && attempts < maxAttempts) {
-      const candidate = allPositions[Math.floor(Math.random() * allPositions.length)]
-
-      if (placed.has(candidate)) {
-        attempts += 1
-        continue
-      }
-
-      if (minDistance > 0 && Math.random() > clusterChance) {
-        let tooClose = false
-        const row = Math.floor(candidate / cols)
-        const col = candidate % cols
-
-        for (const existing of placed) {
-          const existingRow = Math.floor(existing / cols)
-          const existingCol = existing % cols
-          const distance = Math.abs(row - existingRow) + Math.abs(col - existingCol)
-
-          if (distance < minDistance) {
-            tooClose = true
-            break
-          }
-        }
-
-        if (tooClose) {
-          attempts += 1
-          continue
-        }
-      }
-
-      placed.add(candidate)
-    }
-
-    for (const position of placed) {
-      const row = Math.floor(position / cols)
-      const col = position % cols
-      board[row][col].mine = true
     }
 
     for (let row = 0; row < rows; row += 1) {
@@ -302,37 +250,11 @@ export function createGame(): GameController {
           continue
         }
 
-        let count = 0
-        for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
-          for (let colOffset = -1; colOffset <= 1; colOffset += 1) {
-            if (rowOffset === 0 && colOffset === 0) {
-              continue
-            }
-
-            const nextRow = row + rowOffset
-            const nextCol = col + colOffset
-
-            if (nextRow >= 0 && nextRow < rows && nextCol >= 0 && nextCol < cols) {
-              count += board[nextRow][nextCol].mine ? 1 : 0
-            }
-          }
-        }
-
-        board[row][col].adjacent = count
+        board[row][col].adjacent = getAdjacentPositions(row, col).filter(
+          ([nextRow, nextCol]) => board[nextRow][nextCol].mine,
+        ).length
       }
     }
-  }
-
-  function getMinMineDistance(): number {
-    if (difficulty === 'beginner') return 4
-    if (difficulty === 'intermediate') return 2
-    return 0
-  }
-
-  function getClusterChance(): number {
-    if (difficulty === 'beginner') return 0.1
-    if (difficulty === 'intermediate') return 0.4
-    return 0.8
   }
 
   function revealFloodFill(startRow: number, startCol: number) {
@@ -493,10 +415,13 @@ export function createGame(): GameController {
 
     if (cell.revealed && (chordingMode === 'dig' || chordingMode === 'both')) {
       chordCell(currentTarget.row, currentTarget.col)
-      return
+    } else {
+      revealCell(currentTarget.row, currentTarget.col)
     }
 
-    revealCell(currentTarget.row, currentTarget.col)
+    // revealCell/chordCell can bail out without notifying (e.g. clicking an already
+    // revealed cell), so always notify here to render the moved target highlight.
+    notify()
   }
 
   function chordCell(row: number, col: number) {
@@ -684,11 +609,27 @@ export function createGame(): GameController {
   }
 
   function getElapsedMs(): number {
-    if (status === 'playing') {
+    if (status === 'playing' && !timerPaused) {
       return Date.now() - startedAt
     }
 
     return elapsed
+  }
+
+  // Freeze the stopwatch while the tab is unfocused/hidden so background time isn't counted.
+  function pauseTimer() {
+    if (status === 'playing' && !timerPaused) {
+      elapsed = Date.now() - startedAt
+      timerPaused = true
+    }
+  }
+
+  // Resume from the frozen time, ignoring however long the tab was away.
+  function resumeTimer() {
+    if (status === 'playing' && timerPaused) {
+      startedAt = Date.now() - elapsed
+      timerPaused = false
+    }
   }
 
   function reset() {
@@ -697,6 +638,7 @@ export function createGame(): GameController {
     status = 'ready'
     startedAt = 0
     elapsed = 0
+    timerPaused = false
     firstReveal = true
     targetedCell = {
       row: Math.floor(rows / 2),
@@ -742,14 +684,29 @@ export function createGame(): GameController {
 
   restore()
 
-  // The timer ticks via the UI between state changes, so capture the live elapsed time
-  // when the page is hidden or closed to keep the saved stopwatch accurate.
+  // Pause the stopwatch whenever the tab loses focus or is hidden, and resume when it
+  // comes back — so time spent away is never counted. Pausing also freezes the saved
+  // elapsed time, keeping the persisted stopwatch accurate.
+  const handleBlur = () => {
+    pauseTimer()
+    persist()
+  }
+
   window.addEventListener('beforeunload', persist)
+  window.addEventListener('blur', handleBlur)
+  window.addEventListener('focus', resumeTimer)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      persist()
+      handleBlur()
+    } else {
+      resumeTimer()
     }
   })
+
+  // If the page loads while already in the background, start paused.
+  if (document.visibilityState === 'hidden' || !document.hasFocus()) {
+    pauseTimer()
+  }
 
   return {
     getSnapshot,
