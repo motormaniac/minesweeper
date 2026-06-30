@@ -14,6 +14,7 @@
   --accent: #72c7ff;
   --accent-strong: #58b7f2;
   --danger: #ff7c93;
+  --success: #2fb380;
   --shadow: 0 18px 50px rgba(122, 147, 196, 0.12);
   --tile: #ffffff;
   --tile-edge: #cad8ff;
@@ -378,6 +379,7 @@ h1 {
 }
 
 .board-column {
+  position: relative;
   display: grid;
   justify-items: center;
   gap: 14px;
@@ -573,6 +575,167 @@ h1 {
   text-align: center;
   color: var(--muted);
   font-weight: 700;
+}
+
+.result-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  border-radius: inherit;
+  background: rgba(35, 51, 84, 0.42);
+  backdrop-filter: blur(4px);
+  animation: result-fade 160ms ease-out;
+}
+
+.result-overlay--no-anim,
+.result-overlay--no-anim .result-modal {
+  animation: none;
+}
+
+.result-modal {
+  position: relative;
+  width: min(380px, 100%);
+  padding: 30px 26px 26px;
+  border-radius: 24px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  text-align: center;
+  border-top: 4px solid var(--muted);
+  animation: result-pop 200ms cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.result-overlay--won .result-modal {
+  border-top-color: var(--success);
+}
+
+.result-overlay--lost .result-modal {
+  border-top-color: var(--danger);
+}
+
+.result-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease;
+}
+
+.result-close:hover {
+  color: var(--text);
+  border-color: rgba(114, 199, 255, 0.5);
+}
+
+.result-emoji {
+  font-size: 2.6rem;
+  line-height: 1;
+}
+
+.result-outcome {
+  margin: 10px 0 6px;
+  font-size: 1.7rem;
+  letter-spacing: -0.03em;
+}
+
+.result-overlay--won .result-outcome {
+  color: var(--success);
+}
+
+.result-overlay--lost .result-outcome {
+  color: var(--danger);
+}
+
+.result-detail {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.result-time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: -4px 0 22px;
+}
+
+.result-time-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.result-time-value {
+  color: var(--text);
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+.result-best {
+  margin-top: 4px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--success);
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.result-newgame {
+  width: 100%;
+  padding: 12px 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: linear-gradient(180deg, #7ed0ff 0%, #5ebaf4 100%);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1rem;
+  cursor: pointer;
+  box-shadow: 0 16px 28px rgba(94, 186, 244, 0.28);
+  transition: transform 120ms ease;
+}
+
+.result-newgame:hover {
+  transform: translateY(-1px);
+}
+
+.result-newgame:active {
+  transform: translateY(0);
+}
+
+@keyframes result-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes result-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
 }
 
 @media (max-width: 800px) {

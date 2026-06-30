@@ -7,6 +7,7 @@ import type {
   GameSnapshot,
   GameStatus,
   JumpMode,
+  LossReason,
 } from './game'
 import { difficulties } from './game'
 
@@ -183,16 +184,91 @@ function renderJumpOptions(currentMode: JumpMode) {
   return `<div class="chording-bar">${buttons}</div>`
 }
 
-function statusLabel(status: GameStatus): string {
-  if (status === 'won') {
-    return 'You cleared the field.'
-  }
+// A simple On/Off toggle used for boolean settings. `name` selects the dataset key so the
+// click handler knows which setting changed.
+function renderToggle(name: string, enabled: boolean) {
+  const option = (value: 'on' | 'off', label: string, active: boolean) => `
+    <button
+      class="chording-option ${active ? 'chording-option--active' : ''}"
+      data-toggle="${name}"
+      data-value="${value}"
+      type="button"
+    >${label}</button>
+  `
 
-  if (status === 'lost') {
-    return 'Boom. Try again.'
+  return `<div class="chording-bar">${option('on', 'On', enabled)}${option('off', 'Off', !enabled)}</div>`
+}
+
+// The end-of-game banner: a bold outcome word plus a one-line detail. While playing it's just
+// a hint. Returns the inner HTML for the #message element.
+// The bottom-of-board line is now just a hint while playing — the win/loss outcome lives in
+// the result popup (see renderResultPopup).
+function statusHint(status: GameStatus): string {
+  if (status === 'won' || status === 'lost') {
+    return ''
   }
 
   return 'Click a tile to start.'
+}
+
+type ResultCopy = { emoji: string; outcome: string; detail: string }
+
+function resultCopy(status: GameStatus, lossReason: LossReason): ResultCopy | null {
+  if (status === 'won') {
+    return { emoji: '🎉', outcome: 'You win!', detail: 'You cleared every safe tile.' }
+  }
+
+  if (status === 'lost') {
+    const detail =
+      lossReason === 'guess'
+        ? 'You revealed a tile that wasn\'t provably safe — no lucky guesses allowed.'
+        : 'You hit a mine.'
+
+    return { emoji: '💥', outcome: 'You lose', detail }
+  }
+
+  return null
+}
+
+// The win/loss modal. Returns '' when the game is in progress, or when the player has
+// dismissed the popup to inspect the final board.
+function renderResultPopup(snapshot: GameSnapshot, dismissed: boolean, animate: boolean): string {
+  const copy = resultCopy(snapshot.status, snapshot.lossReason)
+
+  if (!copy || dismissed) {
+    return ''
+  }
+
+  const variant = snapshot.status === 'won' ? 'result-overlay--won' : 'result-overlay--lost'
+  // Only the first render after the game ends animates in; later re-renders (e.g. pressing a
+  // key while the popup is open) recreate the element but must not replay the entrance.
+  const motion = animate ? '' : ' result-overlay--no-anim'
+
+  const best = snapshot.bestTimes[snapshot.difficulty]
+  const isNewBest = snapshot.status === 'won' && best !== undefined && snapshot.elapsed <= best
+  const time =
+    snapshot.status === 'won'
+      ? `
+        <div class="result-time">
+          <span class="result-time-label">Cleared in</span>
+          <span class="result-time-value">${formatTime(snapshot.elapsed)}</span>
+          ${isNewBest ? '<span class="result-best">New Time!</span>' : ''}
+        </div>
+      `
+      : ''
+
+  return `
+    <div class="result-overlay ${variant}${motion}" role="dialog" aria-modal="true" aria-label="Game result">
+      <div class="result-modal">
+        <button class="result-close" type="button" aria-label="Dismiss">×</button>
+        <div class="result-emoji">${copy.emoji}</div>
+        <h2 class="result-outcome">${copy.outcome}</h2>
+        <p class="result-detail">${copy.detail}</p>
+        ${time}
+        <button class="result-newgame" type="button">New game</button>
+      </div>
+    </div>
+  `
 }
 
 function formatTime(ms: number): string {
@@ -332,6 +408,16 @@ function renderSettingsSection(snapshot: GameSnapshot, keybinds: Keybinds, liste
       </div>
 
       <div class="settings-option settings-option--stacked">
+        <span class="option-label">Smart Chording</span>
+        ${renderToggle('smartChording', snapshot.smartChording)}
+      </div>
+
+      <div class="settings-option settings-option--stacked">
+        <span class="option-label">Punish Guessing</span>
+        ${renderToggle('punishGuessing', snapshot.punishGuessing)}
+      </div>
+
+      <div class="settings-option settings-option--stacked">
         <span class="option-label">Jump Mode</span>
         ${renderJumpOptions(snapshot.jumpMode)}
       </div>
@@ -372,6 +458,12 @@ function renderHowToSection(keybinds: Keybinds) {
       <h3>Chording</h3>
       <p>On a revealed number whose adjacent flags match its value, activating it clears the remaining neighbors. <strong>Chording Mode</strong> picks which actions chord: dig (reveal), flag, both, or none.</p>
 
+      <h3>Smart Chording</h3>
+      <p><strong>On</strong> only chords when the surrounding flags match the number. <strong>Off</strong> skips that check and reveals (or flags) every non-flagged neighbor — faster, but it will happily detonate a mine.</p>
+
+      <h3>Punish Guessing</h3>
+      <p>When <strong>on</strong>, revealing a tile that couldn't be proven safe from the visible board loses the game — even if that tile wasn't a mine. Boards are always solvable without guessing, so there's always a logical move to find.</p>
+
       <h3>Jump Mode</h3>
       <p><strong>Unrevealed</strong> jumps to the next hidden tile; <strong>Number</strong> jumps to the next numbered tile in the direction you press.</p>
     </div>
@@ -383,6 +475,8 @@ function renderApp(
   activeSection: SidebarSection,
   keybinds: Keybinds,
   listeningAction: BindableAction | null,
+  resultDismissed: boolean,
+  animateResult: boolean,
 ) {
   return `
     <main class="game-shell">
@@ -403,7 +497,9 @@ function renderApp(
           ${renderBoard(snapshot.board, snapshot.targetedCell)}
         </div>
 
-        <p id="message" class="message">${statusLabel(snapshot.status)}</p>
+        <p id="message" class="message">${statusHint(snapshot.status)}</p>
+
+        ${renderResultPopup(snapshot, resultDismissed, animateResult)}
       </section>
 
       <aside class="settings-column panel">
@@ -428,6 +524,10 @@ export function mountGame(root: HTMLElement, game: GameController) {
   let activeSection: SidebarSection = 'settings'
   const keybinds = loadKeybinds()
   let listeningAction: BindableAction | null = null
+  // Lets the player close the win/loss popup to inspect the final board; reset on a new game.
+  let resultDismissed = false
+  // True once the result popup's entrance has played, so re-renders while it's open don't replay it.
+  let resultPopupShown = false
 
   const handleMouseDown = (event: MouseEvent) => {
     if (event.button === 1) {
@@ -569,13 +669,38 @@ export function mountGame(root: HTMLElement, game: GameController) {
 
   const render = () => {
     const snapshot = game.getSnapshot()
-    root.innerHTML = renderApp(snapshot, activeSection, keybinds, listeningAction)
+
+    // A fresh or in-progress game clears any prior dismissal so the next result pops up.
+    if (snapshot.status === 'ready' || snapshot.status === 'playing') {
+      resultDismissed = false
+      resultPopupShown = false
+    }
+
+    const showPopup = (snapshot.status === 'won' || snapshot.status === 'lost') && !resultDismissed
+    // Animate the entrance only the first time the popup appears. A single game-ending action can
+    // trigger several synchronous re-renders (e.g. endGame's notify plus clickCell's own notify);
+    // those all share one paint, so they must all animate. We only mark the popup "shown" on the
+    // next frame — after it's actually painted — so a later render (pressing a key while it's open)
+    // is what gets suppressed, not the synchronous burst that first shows it.
+    const animateResult = showPopup && !resultPopupShown
+
+    if (showPopup && !resultPopupShown) {
+      requestAnimationFrame(() => {
+        resultPopupShown = true
+      })
+    }
+
+    root.innerHTML = renderApp(snapshot, activeSection, keybinds, listeningAction, resultDismissed, animateResult)
 
     const boardElement = root.querySelector<HTMLDivElement>('.board')
     const resetButton = root.querySelector<HTMLButtonElement>('#reset')
+    const resultOverlay = root.querySelector<HTMLDivElement>('.result-overlay')
+    const resultNewGame = root.querySelector<HTMLButtonElement>('.result-newgame')
+    const resultClose = root.querySelector<HTMLButtonElement>('.result-close')
     const sectionTabs = Array.from(root.querySelectorAll<HTMLButtonElement>('.section-tab'))
     const chordingButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('.chording-option[data-mode]'))
     const jumpButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('.chording-option[data-jump-mode]'))
+    const toggleButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('.chording-option[data-toggle]'))
     const keybindButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('.keybind-key'))
     const difficultyButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('.difficulty'))
 
@@ -595,6 +720,30 @@ export function mountGame(root: HTMLElement, game: GameController) {
     if (resetButton) {
       resetButton.addEventListener('click', () => {
         game.reset()
+      })
+    }
+
+    if (resultNewGame) {
+      resultNewGame.addEventListener('click', () => {
+        game.reset()
+      })
+    }
+
+    const dismissResult = () => {
+      resultDismissed = true
+      render()
+    }
+
+    if (resultClose) {
+      resultClose.addEventListener('click', dismissResult)
+    }
+
+    if (resultOverlay) {
+      // Clicking the dimmed backdrop (outside the modal) dismisses to reveal the final board.
+      resultOverlay.addEventListener('click', (event) => {
+        if (event.target === resultOverlay) {
+          dismissResult()
+        }
       })
     }
 
@@ -619,6 +768,23 @@ export function mountGame(root: HTMLElement, game: GameController) {
         }
 
         game.setJumpMode(selected)
+      })
+    }
+
+    for (const button of toggleButtons) {
+      button.addEventListener('click', () => {
+        const toggle = button.dataset.toggle
+        const enabled = button.dataset.value === 'on'
+
+        if (toggle === 'smartChording') {
+          if (enabled !== snapshot.smartChording) {
+            game.setSmartChording(enabled)
+          }
+        } else if (toggle === 'punishGuessing') {
+          if (enabled !== snapshot.punishGuessing) {
+            game.setPunishGuessing(enabled)
+          }
+        }
       })
     }
 

@@ -13,6 +13,15 @@ type ChangeNote = {
 
 const changelog: ChangeNote[] = [
   {
+    version: 4,
+    title: 'Smart Chording & no-luck mode',
+    notes: [
+      'New Smart Chording toggle: off chords every non-flagged neighbor without checking the count.',
+      'New Punish Guessing toggle: reveal a tile that wasn\'t provably safe and you lose, even if it wasn\'t a mine.',
+      'Win and loss now appear in a popup over the board, with your clear time front and center and a New Time! badge when you beat your best.',
+    ],
+  },
+  {
     version: 3,
     title: 'Smarter boards & stats',
     notes: [

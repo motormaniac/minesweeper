@@ -1,4 +1,5 @@
 import { generateSolvableBoard } from './boardGenerator'
+import { computeSafeCells } from './solver'
 
 export type DifficultyName = 'beginner' | 'intermediate' | 'expert'
 
@@ -18,6 +19,9 @@ export type Cell = {
 }
 
 export type GameStatus = 'ready' | 'playing' | 'won' | 'lost'
+
+// Why the game was lost, so the UI can distinguish a detonated mine from a punished guess.
+export type LossReason = 'mine' | 'guess' | null
 
 export type ChordingMode = 'none' | 'dig' | 'flag' | 'both'
 
@@ -39,6 +43,9 @@ export type GameSnapshot = {
   targetedCell: { row: number; col: number } | null
   chordingMode: ChordingMode
   jumpMode: JumpMode
+  smartChording: boolean
+  punishGuessing: boolean
+  lossReason: LossReason
   bestTimes: BestTimes
 }
 
@@ -56,6 +63,8 @@ export type GameController = {
   setDifficulty: (name: DifficultyName) => void
   setChordingMode: (mode: ChordingMode) => void
   setJumpMode: (mode: JumpMode) => void
+  setSmartChording: (enabled: boolean) => void
+  setPunishGuessing: (enabled: boolean) => void
   subscribe: (listener: () => void) => () => void
 }
 
@@ -71,7 +80,10 @@ type PersistedState = {
   difficulty: DifficultyName
   chordingMode: ChordingMode
   jumpMode: JumpMode
+  smartChording: boolean
+  punishGuessing: boolean
   status: GameStatus
+  lossReason: LossReason
   elapsed: number
   firstReveal: boolean
   targetedCell: { row: number; col: number } | null
@@ -90,6 +102,9 @@ export function createGame(): GameController {
   let targetedCell: { row: number; col: number } | null = null
   let chordingMode: ChordingMode = 'both'
   let jumpMode: JumpMode = 'unrevealed'
+  let smartChording = true
+  let punishGuessing = false
+  let lossReason: LossReason = null
   let bestTimes: BestTimes = {}
 
   const listeners = new Set<() => void>()
@@ -146,7 +161,10 @@ export function createGame(): GameController {
         difficulty,
         chordingMode,
         jumpMode,
+        smartChording,
+        punishGuessing,
         status,
+        lossReason,
         elapsed: getElapsedMs(),
         firstReveal,
         targetedCell,
@@ -221,6 +239,10 @@ export function createGame(): GameController {
     difficulty = saved.difficulty
     chordingMode = saved.chordingMode
     jumpMode = saved.jumpMode
+    // Older saves predate these options; default rather than reject the whole save.
+    smartChording = typeof saved.smartChording === 'boolean' ? saved.smartChording : true
+    punishGuessing = typeof saved.punishGuessing === 'boolean' ? saved.punishGuessing : false
+    lossReason = saved.lossReason === 'mine' || saved.lossReason === 'guess' ? saved.lossReason : null
     status = saved.status
     elapsed = saved.elapsed
     firstReveal = saved.firstReveal
@@ -346,8 +368,9 @@ export function createGame(): GameController {
     }
   }
 
-  function endGame(result: Exclude<GameStatus, 'ready' | 'playing'>) {
+  function endGame(result: Exclude<GameStatus, 'ready' | 'playing'>, reason: LossReason = null) {
     status = result
+    lossReason = result === 'lost' ? reason : null
     elapsed = startedAt ? Date.now() - startedAt : 0
     revealAllMines()
 
@@ -390,6 +413,9 @@ export function createGame(): GameController {
       return
     }
 
+    // The first click carries no information, so it can never count as a guess.
+    const isFirstReveal = firstReveal
+
     if (firstReveal) {
       plantMines(row, col)
       firstReveal = false
@@ -398,13 +424,26 @@ export function createGame(): GameController {
 
     if (cell.mine) {
       cell.revealed = true
-      endGame('lost')
+      endGame('lost', 'mine')
+      return
+    }
+
+    // Punish Guessing: revealing a cell that isn't provably safe from the visible board is a
+    // guess — even though this particular cell happened to be safe.
+    if (punishGuessing && !isFirstReveal && !isProvablySafe(row, col)) {
+      cell.revealed = true
+      endGame('lost', 'guess')
       return
     }
 
     revealFloodFill(row, col)
     checkWin()
     notify()
+  }
+
+  function isProvablySafe(row: number, col: number): boolean {
+    const safeCells = computeSafeCells(board, getDifficulty().mines)
+    return safeCells.has(row * getDifficulty().cols + col)
   }
 
   function clickCell(row: number, col: number) {
@@ -438,9 +477,16 @@ export function createGame(): GameController {
     const adjacentPositions = getAdjacentPositions(row, col)
     const flaggedNeighbors = adjacentPositions.filter(([nextRow, nextCol]) => board[nextRow][nextCol].flagged).length
 
-    if (flaggedNeighbors !== cell.adjacent) {
+    // Smart Chording (on) only fires when the flag count matches the number. With it off the
+    // chord reveals every non-flagged neighbour regardless — convenient but reckless.
+    if (smartChording && flaggedNeighbors !== cell.adjacent) {
       return
     }
+
+    // For Punish Guessing, the chord's reveals are only justified if each uncovered neighbour
+    // is provably safe from the board as it stands before the chord opens anything.
+    const cols = getDifficulty().cols
+    const safeCells = punishGuessing ? computeSafeCells(board, getDifficulty().mines) : null
 
     let changed = false
 
@@ -453,7 +499,13 @@ export function createGame(): GameController {
 
       if (neighbor.mine) {
         neighbor.revealed = true
-        endGame('lost')
+        endGame('lost', 'mine')
+        return
+      }
+
+      if (safeCells && !safeCells.has(nextRow * cols + nextCol)) {
+        neighbor.revealed = true
+        endGame('lost', 'guess')
         return
       }
 
@@ -479,7 +531,9 @@ export function createGame(): GameController {
       ([nextRow, nextCol]) => !board[nextRow][nextCol].revealed,
     )
 
-    if (unrevealedNeighbors.length !== cell.adjacent) {
+    // Smart Chording (on) only flags when the unrevealed neighbour count matches the number.
+    // With it off, flag every unflagged neighbour regardless of the count.
+    if (smartChording && unrevealedNeighbors.length !== cell.adjacent) {
       return
     }
 
@@ -636,6 +690,7 @@ export function createGame(): GameController {
     const { rows, cols } = getDifficulty()
     board = createBoard(rows, cols)
     status = 'ready'
+    lossReason = null
     startedAt = 0
     elapsed = 0
     timerPaused = false
@@ -662,6 +717,16 @@ export function createGame(): GameController {
     notify()
   }
 
+  function setSmartChording(enabled: boolean) {
+    smartChording = enabled
+    notify()
+  }
+
+  function setPunishGuessing(enabled: boolean) {
+    punishGuessing = enabled
+    notify()
+  }
+
   function getSnapshot(): GameSnapshot {
     const currentDifficulty = getDifficulty()
 
@@ -678,6 +743,9 @@ export function createGame(): GameController {
       targetedCell,
       chordingMode,
       jumpMode,
+      smartChording,
+      punishGuessing,
+      lossReason,
       bestTimes,
     }
   }
@@ -722,6 +790,8 @@ export function createGame(): GameController {
     setDifficulty,
     setChordingMode,
     setJumpMode,
+    setSmartChording,
+    setPunishGuessing,
     subscribe(listener) {
       listeners.add(listener)
 
